@@ -1,0 +1,86 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      ctfd:
+        image: ctfd/ctfd:3.8.0@sha256:61712c4af6e9cddccfafc4503484c8091f6325be286d407595b922dc9552b5ae
+        ports:
+          - 8000:8000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Cache go modules
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Wait for CTFd server
+        run: |
+          max_attempts=60
+          base_url="http://localhost:8000"
+          for ((i=0; i<$max_attempts; i++)); do
+            if curl --head --fail --silent --show-error "$base_url" >/dev/null; then
+              echo "Server is up and running!"
+              break
+            else
+              echo "Waiting for the server to respond... (attempt $((i+1)))"
+              sleep 5
+            fi
+          done
+          if [ $i -eq $max_attempts ]; then
+            echo "Server did not respond within the allotted time. Exiting..."
+            exit 1
+          fi
+
+      - name: Setup CTFd
+        uses: ctfer-io/ctfd-setup@c3108d5d78162e243f7aad777053c5b6bf33a65e # v1.7.3
+        with:
+          url: 'http://ctfd:8000'
+          appearance_name: TFP-CTFd
+          appearance_description: Terraform Provider CTFd.
+          mode: teams
+          admin_name: ctfer
+          admin_email: ctfer-io@protonmail.com
+          admin_password: ctfer
+
+      - name: Run go acceptance tests
+        run: make test-acc
+        env:
+          CTFD_URL: http://localhost:8000
+          CTFD_ADMIN_USERNAME: ctfer
+          CTFD_ADMIN_PASSWORD: ctfer
+
+      - name: Upload coverage to Coveralls
+        uses: shogo82148/actions-goveralls@25f5320d970fb565100cf1993ada29be1bb196a1 # v1.10.0
+        with:
+          path-to-profile: cov.out
+
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: go-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
